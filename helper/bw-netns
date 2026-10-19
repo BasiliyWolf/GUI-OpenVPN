@@ -1,0 +1,175 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+NS=bwovpn7
+HOST_IF=bwveth7h
+PEER_IF=bwveth7n
+HOST_CIDR=10.231.177.1/30
+PEER_CIDR=10.231.177.2/30
+HOST_IP=10.231.177.1
+PEER_IP=10.231.177.2
+PIDFILE=/run/bwovpn7.pid
+STATE=/run/bwovpn7.state
+FORWARD_STATE=/run/bwovpn7.ip_forward
+LOG=/var/log/bwovpn7.log
+AUTH=/run/bwovpn7-auth.txt
+ASKPASS=/run/bwovpn7-key.txt
+NAT_TABLE=bwovpn7nat
+fail(){ echo "Ошибка: $*" >&2; exit 1; }
+[[ ${EUID:-999} -eq 0 ]] || fail 'Нужны права root (через pkexec).'
+need(){ command -v "$1" >/dev/null 2>&1 || fail "Не найдено: $1"; }
+ns_exists(){ ip netns list | grep -Eq '^bwovpn7([[:space:]]|$)'; }
+cleanup(){
+  if [[ -f "$PIDFILE" ]]; then
+    pid=$(cat "$PIDFILE" 2>/dev/null || true)
+    if [[ "$pid" =~ ^[0-9]+$ ]]; then kill "$pid" 2>/dev/null || true; fi
+    rm -f "$PIDFILE"
+  fi
+  if ns_exists; then
+    while read -r pid; do [[ "$pid" =~ ^[0-9]+$ ]] && kill "$pid" 2>/dev/null || true; done < <(ip netns pids "$NS" || true)
+    sleep 0.2
+    ip netns del "$NS" 2>/dev/null || true
+  fi
+  ip link del "$HOST_IF" 2>/dev/null || true
+  nft delete table ip "$NAT_TABLE" 2>/dev/null || true
+  rm -f "$STATE" "$AUTH" "$ASKPASS"
+  if [[ -f "$FORWARD_STATE" ]]; then
+    prior=$(cat "$FORWARD_STATE" 2>/dev/null || true)
+    if [[ "$prior" == 0 || "$prior" == 1 ]]; then
+      current=$(sysctl -n net.ipv4.ip_forward 2>/dev/null || true)
+      if [[ "$current" == 1 ]]; then sysctl -qw "net.ipv4.ip_forward=$prior" || true; fi
+    fi
+    rm -f "$FORWARD_STATE"
+  fi
+  rm -rf "/etc/netns/$NS"
+}
+case "${1:-}" in
+ stop) need ip; need nft; cleanup; echo 'Изолированный VPN остановлен';;
+ status)
+   need ip
+   if ns_exists; then
+     echo 'Пространство: запущено'
+     ip netns exec "$NS" ip -4 address show dev tun0 2>/dev/null || true
+     ip netns exec "$NS" ip route show default || true
+   else echo 'Пространство: остановлено'; fi;;
+ logs) tail -n 150 "$LOG" 2>/dev/null || true;;
+ start)
+   need ip; need nft; need realpath; need stat; need runuser
+   [[ $# -eq 6 || $# -eq 8 ]] || fail 'Использование: start <openvpn> <ovpn> <server_ipv4> <port> <tcp|udp> [uid credential_file]'
+   BINARY=$(realpath -e -- "$2") || fail 'Не найден OpenVPN'
+   PROFILE=$(realpath -e -- "$3") || fail 'Не найден профиль'
+   SERVER=$4; PORT=$5; PROTO=$6
+   [[ "$SERVER" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || fail 'Нужен буквальный IPv4 адрес сервера'
+   IFS=. read -r a b c d <<<"$SERVER"
+   for oct in "$a" "$b" "$c" "$d"; do (( 10#$oct <= 255 )) || fail 'Неверный IPv4 адрес'; done
+   [[ "$PORT" =~ ^[0-9]{1,5}$ ]] && (( PORT >= 1 && PORT <= 65535 )) || fail 'Неверный порт'
+   [[ "$PROTO" == 'udp' || "$PROTO" == 'tcp' ]] || fail 'Неверный протокол'
+   [[ -f "$BINARY" && -x "$BINARY" ]] || fail 'Файл OpenVPN не исполняемый'
+   [[ $(stat -c %u "$BINARY") == 0 ]] || fail 'OpenVPN должен принадлежать root'
+   [[ -z $(find "$BINARY" -maxdepth 0 -perm /022 -print) ]] || fail 'Бинарный файл доступен для записи посторонним'
+   [[ -f "$PROFILE" ]] || fail 'Некорректный файл профиля'
+   [[ -z $(find "$PROFILE" -maxdepth 0 -perm /022 -print) ]] || fail 'Профиль доступен для записи группе или другим пользователям'
+   [[ ! -L "$PROFILE" ]] || fail 'Символическая ссылка на профиль запрещена'
+   [[ ! -L "$BINARY" ]] || fail 'Символическая ссылка на бинарный файл запрещена' 
+   if grep -Eiq '^[[:space:]]*(script-security|up|down|plugin|tls-verify|ipchange|route-up|route-pre-down|client-connect|learn-address|management|daemon|writepid)[[:space:]]' "$PROFILE"; then
+     fail 'Профиль содержит исполняемые директивы или управление процессом. Используйте доверенный профиль без скриптов.'
+   fi
+   AUTH_OPTIONS=()
+   if [[ $# -eq 8 ]]; then
+     AUTH_UID=$7; CRED_PATH=$8
+     [[ "$AUTH_UID" =~ ^[0-9]+$ ]] && (( AUTH_UID >= 1000 )) || fail 'Некорректный UID'
+     [[ "$CRED_PATH" == /run/user/$AUTH_UID/bw-vpn-auth-* ]] || fail 'Неверный путь секретов'
+     [[ ! -L "$CRED_PATH" && -f "$CRED_PATH" ]] || fail 'Файл авторизации отсутствует'
+     [[ $(stat -c %u "$CRED_PATH") == "$AUTH_UID" && $(stat -c %a "$CRED_PATH") == 600 ]] || fail 'Небезопасные права на файл авторизации'
+     [[ $(stat -c %s "$CRED_PATH") -le 8192 ]] || fail 'Слишком большой файл авторизации'
+     mapfile -t CRED_LINES < "$CRED_PATH"
+     rm -f -- "$CRED_PATH"
+     [[ ${#CRED_LINES[@]} -ge 3 ]] || fail 'Неполные данные авторизации'
+     umask 077
+     printf '%s\n%s\n' "${CRED_LINES[0]}" "${CRED_LINES[1]}" > "$AUTH"
+     AUTH_OPTIONS+=(--auth-user-pass "$AUTH")
+     if [[ -n ${CRED_LINES[2]} ]]; then
+       printf '%s\n' "${CRED_LINES[2]}" > "$ASKPASS"
+       AUTH_OPTIONS+=(--askpass "$ASKPASS")
+     fi
+     unset CRED_LINES
+   fi
+   if ns_exists; then rm -f "$AUTH" "$ASKPASS"; fail 'Изолированное подключение уже существует. Сначала остановите его.'; fi
+   mkdir -p "/etc/netns/$NS"
+   printf 'nameserver 1.1.1.1\nnameserver 9.9.9.9\n' > "/etc/netns/$NS/resolv.conf"
+   chmod 644 "/etc/netns/$NS/resolv.conf"
+   ip netns add "$NS"
+   trap 'cleanup' ERR
+   ip link add "$HOST_IF" type veth peer name "$PEER_IF"
+   ip addr add "$HOST_CIDR" dev "$HOST_IF"
+   ip link set "$HOST_IF" up
+   ip link set "$PEER_IF" netns "$NS"
+   ip -n "$NS" addr add "$PEER_CIDR" dev "$PEER_IF"
+   ip -n "$NS" link set "$PEER_IF" up
+   ip -n "$NS" link set lo up
+   ip netns exec "$NS" sysctl -qw net.ipv6.conf.all.disable_ipv6=1 || true
+   ip -n "$NS" route add "$SERVER/32" via "$HOST_IP" dev "$PEER_IF"
+   ip netns exec "$NS" nft -f - <<NFT
+ table inet bwvpnfilter {
+   chain output {
+     type filter hook output priority -100; policy drop;
+     oifname "lo" accept
+     oifname "tun0" accept
+     oifname "$PEER_IF" ip daddr $SERVER $PROTO dport $PORT accept
+   }
+   chain input {
+     type filter hook input priority -100; policy drop;
+     iifname "lo" accept
+     iifname "tun0" accept
+     iifname "$PEER_IF" ip saddr $SERVER $PROTO sport $PORT accept
+   }
+ }
+NFT
+   nft add table ip "$NAT_TABLE"
+   nft "add chain ip $NAT_TABLE postrouting { type nat hook postrouting priority 110; policy accept; }"
+   nft add rule ip "$NAT_TABLE" postrouting ip saddr 10.231.177.0/30 masquerade
+   nft "add chain ip $NAT_TABLE forward { type filter hook forward priority -100; policy accept; }"
+   nft add rule ip "$NAT_TABLE" forward iifname "$HOST_IF" ip saddr "$PEER_IP" accept
+   nft add rule ip "$NAT_TABLE" forward oifname "$HOST_IF" ip daddr "$PEER_IP" accept
+   sysctl -n net.ipv4.ip_forward > "$FORWARD_STATE"
+   chmod 600 "$FORWARD_STATE"
+   sysctl -qw net.ipv4.ip_forward=1
+   touch "$LOG"; chmod 600 "$LOG"
+   ip netns exec "$NS" "$BINARY" --config "$PROFILE" --script-security 1 --dev tun0 "${AUTH_OPTIONS[@]}" --writepid "$PIDFILE" --log-append "$LOG" --daemon
+   printf '%s\n' "$SERVER" > "$STATE"
+   trap - ERR
+   echo 'OpenVPN запущен в изолированном пространстве; дождитесь адреса tun0'
+   ;;
+ ready)
+   need ip
+   ns_exists || fail 'Изолированное пространство не запущено'
+   ip -n "$NS" -4 addr show dev tun0 2>/dev/null | grep -q 'inet ' || fail 'VPN туннель ещё не поднят'
+   [[ -f "$PIDFILE" ]] || fail 'Нет PID-файла OpenVPN'
+   ovpn_pid=$(cat "$PIDFILE")
+   [[ "$ovpn_pid" =~ ^[0-9]+$ ]] && kill -0 "$ovpn_pid" 2>/dev/null || fail 'Процесс OpenVPN завершился'
+   ip -n "$NS" route replace default dev tun0
+   ip -n "$NS" route show default
+   ;;
+ launch)
+   need ip; need runuser
+   [[ $# -ge 5 ]] || fail 'Использование: launch <uid> <display> <wayland> <absolute-app> [arguments...]'
+   UID_ARG=$2; DISPLAY_VALUE=$3; WAYLAND_VALUE=$4; shift 4
+   [[ "$DISPLAY_VALUE" =~ ^[a-zA-Z0-9._:-]*$ ]] || fail 'Некорректный DISPLAY'
+   [[ "$WAYLAND_VALUE" =~ ^[a-zA-Z0-9._-]*$ ]] || fail 'Некорректный WAYLAND_DISPLAY'
+   [[ "$UID_ARG" =~ ^[0-9]+$ ]] && (( UID_ARG >= 1000 )) || fail 'Неверный UID пользователя'
+   [[ "$1" == /* && -x "$1" ]] || fail 'Приложение должно быть абсолютным исполняемым файлом'
+   ns_exists || fail 'VPN не запущен'
+   ip -n "$NS" -4 route show default | grep -q 'dev tun0' || fail 'Туннель не готов: запуск запрещен'
+   RUNTIME_VALUE=/run/user/$UID_ARG
+   USER_NAME=$(getent passwd "$UID_ARG" | cut -d: -f1)
+   [[ -n "$USER_NAME" ]] || fail 'Не найден пользователь'
+   ip netns exec "$NS" runuser -u "$USER_NAME" -- env -i \
+      HOME="$(getent passwd "$UID_ARG" | cut -d: -f6)" \
+      PATH=/usr/local/bin:/usr/bin:/bin \
+      DISPLAY="$DISPLAY_VALUE" WAYLAND_DISPLAY="$WAYLAND_VALUE" \
+      XDG_RUNTIME_DIR="$RUNTIME_VALUE" DBUS_SESSION_BUS_ADDRESS="unix:path=$RUNTIME_VALUE/bus" \
+      "$@" >/dev/null 2>&1 &
+   echo 'Приложение запущено в VPN namespace'
+   ;;
+ *) fail 'Команды: start, status, ready, launch, logs, stop';;
+esac

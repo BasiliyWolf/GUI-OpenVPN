@@ -2,12 +2,22 @@
 
 [Русский](README.ru.md) | [English](README.en.md)
 
-OpenVPN graphical client for Linux Mint and Ubuntu, built with C++17, Qt 6, and NetworkManager.
+C++17 / Qt 6 OpenVPN desktop client for Linux Mint and Ubuntu.
 
-Version: **1.0.1**. License: **GNU General Public License v3.0 (GPL-3.0-only)**.
+![Main window / Главное окно](docs/screenshots/01-main-ru.png)
 
-Features include OpenVPN profiles, connection status, traffic monitoring, routes, keyring-backed credentials, RU/EN UI, and an experimental application-isolation mode.
+See the language-specific README for installation and usage.
 
-For installation, source code, screenshots, and the `.deb` package, see the release archive. The isolated-mode Kill Switch is **experimental and has not been independently security-audited**. Some dialogs are not yet completely translated; VPN-interface traffic accounting requires further verification.
+> Safety note: isolated-mode firewall functionality has not been independently verified against DNS/IPv6 leaks, and some dialogs still contain mixed RU/EN text. This is the provided v1.0.1 build, not a security-audited VPN client.
 
-The complete source, images, Debian package, and GPLv3 license text will be added to this repository as part of the release publication.
+
+Full screenshot set is available in `docs/screenshots/`.
+
+
+## Publishing / Публикация
+
+See [Publishing guide (RU)](docs/publication/PUBLISHING_GUIDE.ru.md) and [Release notes (EN)](docs/publication/GITHUB_RELEASE.en.md) / [RU](docs/publication/GITHUB_RELEASE.ru.md).
+
+## License
+
+This project is licensed under the GNU General Public License v3.0. See [LICENSE](LICENSE).

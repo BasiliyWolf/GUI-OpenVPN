@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=GUI OpenVPN [aka BasiliyWolf]
+Comment=OpenVPN connections for Linux
+Exec=gui-openvpn-basiliywolf
+Icon=gui-openvpn-basiliywolf
+Terminal=false
+Categories=Network;Qt;

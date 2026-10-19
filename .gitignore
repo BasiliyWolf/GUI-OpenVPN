@@ -1,0 +1,9 @@
+build/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+*.deb
+*.o
+*.so
+*.swp
+.DS_Store
