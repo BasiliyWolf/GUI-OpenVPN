@@ -6,6 +6,8 @@
 
 ## Скриншоты
 
+![Главное окно (IP скрыт)](docs/screenshots/01-main-ru.png)
+
 ![Авторизация](docs/screenshots/04-auth.png)
 ![Редактор профиля](docs/screenshots/05-profile-editor.png)
 ![Маршрутизация](docs/screenshots/06-routes.png)
