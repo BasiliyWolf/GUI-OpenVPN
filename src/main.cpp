@@ -745,6 +745,16 @@ private:
             const auto doc=QJsonDocument::fromJson(data);
             const QJsonObject object=doc.object();
             for(auto it=object.begin();it!=object.end();++it)d.insert(it.key(),it.value().toString());
+            d.insert(QStringLiteral("Изменение учетных данных"),QStringLiteral("Edit credentials"));
+            d.insert(QStringLiteral("Username:"),QStringLiteral("Имя пользователя:"));
+            d.insert(QStringLiteral("User password:"),QStringLiteral("Пароль пользователя:"));
+            d.insert(QStringLiteral("Certificate key password:"),QStringLiteral("Пароль ключа сертификата:"));
+            d.insert(QStringLiteral("Show passwords"),QStringLiteral("Показать пароли"));
+            d.insert(QStringLiteral("Detected OpenVPN versions"),QStringLiteral("Обнаруженные версии OpenVPN"));
+            d.insert(QStringLiteral("NetworkManager log"),QStringLiteral("Журнал NetworkManager"));
+            d.insert(QStringLiteral("Launch GUI at login"),QStringLiteral("Запускать GUI при входе в систему"));
+            d.insert(QStringLiteral("Start VPN"),QStringLiteral("Запустить VPN"));
+            d.insert(QStringLiteral("Launch application"),QStringLiteral("Запустить приложение"));
             return d;
         }();
         auto convert=[this,&dictionary](const QString &input)->QString {
@@ -753,8 +763,13 @@ private:
             std::sort(keys.begin(),keys.end(),[](const QString&a,const QString&b){return a.size()>b.size();});
             for(const auto &key:keys){
                 const auto translated=dictionary.value(key);
-                if(language=="en")result.replace(key,translated,Qt::CaseSensitive);
-                else result.replace(translated,key,Qt::CaseSensitive);
+                if(language=="en"){
+                    if(result==key) return translated;
+                    if(key.size()>3 && result.startsWith(key)) return translated+result.mid(key.size());
+                }else{
+                    if(result==translated) return key;
+                    if(translated.size()>3 && result.startsWith(translated)) return key+result.mid(translated.size());
+                }
             }
             return result;
         };
