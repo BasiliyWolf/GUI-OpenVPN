@@ -6,6 +6,8 @@ OpenVPN GUI client written in C++17 / Qt 6 for Linux Mint and Ubuntu. Features i
 
 ## Screenshots
 
+![Main window (IP redacted)](docs/screenshots/02-main-en.png)
+
 ![Credentials](docs/screenshots/04-auth.png)
 ![Profile editor](docs/screenshots/05-profile-editor.png)
 ![Routes](docs/screenshots/06-routes.png)
